@@ -87,7 +87,8 @@ client.once('ready', () => {
     const commandFiles = fs.readdirSync(path.join(__dirname, 'commands')).filter((file:any) => file.endsWith('.js'));
     for (const file of commandFiles) {
         const { commands } = require(`./commands/${file}`);
-        for (const commandName in commands) {
+        const commandKeys = Object.keys(commands);
+        for (const commandName of commandKeys) {
             const command = commands[commandName];
             client.commands.set(commandName, command);
         }

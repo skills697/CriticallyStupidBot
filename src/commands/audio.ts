@@ -162,6 +162,7 @@ async function getGuildAudioCommandHandler(
     if (queuedAudioItem) {
         const newHandler = new GuildAudioCommandHandler(guildId, client, textChannel, voiceChannel, connection, onCloseConnection, queuedAudioItem);
         if(newHandler.channelAudioPlayer) {
+            GuildAudioCommandHandlers.set(guildId, newHandler);
             return newHandler;
         }
     }

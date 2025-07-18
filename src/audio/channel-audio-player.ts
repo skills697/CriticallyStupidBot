@@ -1,5 +1,5 @@
 import { VoiceBasedChannel, VoiceConnectionStates } from "discord.js";
-import { AudioPlayer, AudioPlayerState, AudioPlayerStatus, AudioResource, createAudioPlayer, createAudioResource, NoSubscriberBehavior, StreamType, VoiceConnection, VoiceConnectionState} from "@discordjs/voice";
+import { AudioPlayer, AudioPlayerState, AudioPlayerStatus, AudioResource, createAudioPlayer, createAudioResource, NoSubscriberBehavior, StreamType, VoiceConnection, VoiceConnectionDisconnectReason, VoiceConnectionState} from "@discordjs/voice";
 import { QueuedAudioItem } from "./queued-audio-item";
 const { spawn } = require('child_process');
 
@@ -55,8 +55,8 @@ export class ChannelAudioPlayer {
         return this.player?.state.status || AudioPlayerStatus.Idle;
     }
     
-    public get voiceConnectionStatus(): VoiceConnectionState {
-        return this.connection.state || VoiceConnectionStates.Disconnected;
+    public get voiceConnectionStatus() {
+        return this.connection.state.status || VoiceConnectionStates.Disconnected;
     }
     
     /**
@@ -165,7 +165,7 @@ export class ChannelAudioPlayer {
             return;
         }
         
-        if(this.connection.state.status !== 'ready') {
+        if(this.connection.state.status !== "ready") {
             console.error(`Voice connection is not ready for channel ${this.channel.id}. Cannot play audio.`);
             return;
         }
@@ -337,12 +337,17 @@ export class ChannelAudioPlayer {
         console.log(`Destroying audio player for channel ${this.channel.id}`);
         this.clearInactivityTimeout();
         
-        if (this.player) {
+        if (this.player && (this.audioPlayerStatus === AudioPlayerStatus.Playing || this.audioPlayerStatus === AudioPlayerStatus.Paused)) {
             this.player.stop();
         }
-        
+
         if (this.connection) {
-            this.connection.destroy();
+            if (this.connection.state.status !== "disconnected" && this.connection.state.status !== "destroyed") {
+                this.connection.disconnect();
+                if (this.voiceConnectionStatus !== "destroyed") {
+                    this.connection.destroy();
+                } 
+            }
         }
         
         this.playQueue = [];
