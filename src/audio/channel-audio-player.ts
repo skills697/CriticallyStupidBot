@@ -256,9 +256,8 @@ export class ChannelAudioPlayer {
 
         console.log(`Stopping audio playback for channel ${this.channel.id}.`);
         this.player.stop();
-        this.messageOutCallback?.(`⏹️ Stopped audio playback for channel ${this.channel.id}.`
-            + (this.playQueue.length > 0 ? ` Remaining items in queue: ${this.playQueue.length}` : '')
-        );
+        this.playQueue = [];
+        this.messageOutCallback?.(`⏹️ Stopped audio playback for channel ${this.channel.id}, and cleared play queue.`);
     }
     
     /**
@@ -330,6 +329,14 @@ export class ChannelAudioPlayer {
         this.messageOutCallback?.(`▶️ Resumed audio playback for channel ${this.channel.id}.`);
     }
     
+    public getQueue(): QueuedAudioItem[] {
+        return this.playQueue;
+    }
+
+    public getCurrentAudio(): QueuedAudioItem | null {
+        return this.playQueue[0] || null;
+    }
+    
     /**
      * Cleanup method to clear timeouts and resources
      */
@@ -369,7 +376,7 @@ export class ChannelAudioPlayer {
             '-i', url,
             '-analyzeduration', '0',
             '-loglevel', 'error',
-            '-c:a', 'copy',
+            '-c:a', 'libopus',
             '-f', 'ogg',
             '-filter:a', 'loudnorm',
             'pipe:1',

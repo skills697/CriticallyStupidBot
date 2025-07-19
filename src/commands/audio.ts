@@ -1,5 +1,5 @@
 import { AudioPlayer, AudioResource, createAudioResource, StreamType, VoiceConnection } from "@discordjs/voice";
-import { Client, Interaction, VoiceBasedChannel, ApplicationCommandOptionType, TextBasedChannel, TextChannel, time, Guild, Channel, ChannelType} from "discord.js";
+import { Client, Interaction, VoiceBasedChannel, ApplicationCommandOptionType, TextBasedChannel, TextChannel, time, Guild, Channel, ChannelType, WebhookClient} from "discord.js";
 import { ChannelAudioPlayer } from "../audio/channel-audio-player";
 import { QueuedAudioItem } from "../audio/queued-audio-item";
 const { spawn, execSync } = require('child_process');
@@ -14,11 +14,11 @@ class GuildAudioCommandHandler {
     constructor(
         public guildId: string,
         public client: Client,
-        public lastTextChannel: TextChannel,
         public voiceChannel: VoiceBasedChannel,
         public connection: VoiceConnection,
         public closeConnectionCallback: (source: ChannelAudioPlayer | null) => void,
-        queuedAudioItem: QueuedAudioItem
+        queuedAudioItem: QueuedAudioItem,
+        public channelId: string, 
     ) {
         try {
             this.channelAudioPlayer = new ChannelAudioPlayer(
@@ -26,7 +26,7 @@ class GuildAudioCommandHandler {
                 this.connection,
                 this.voiceChannel,
                 this.closeConnectionCallback,
-                this.messageOut
+                this.messageOut,
             );
         }
         catch (error) {
@@ -34,48 +34,28 @@ class GuildAudioCommandHandler {
             this.channelAudioPlayer = null;
         }
     };
-    
-    async messageOut(message: string): Promise<void> {
-        const textChannel = await this.getChannelByIdAndGuildId(
-            this.client,
-            this.lastTextChannel.id,
-            this.guildId
-        );
-        if (!textChannel) {
-            console.error(`Text channel with ID ${this.lastTextChannel.id} not found in guild ${this.guildId}.`);
+
+    /**
+     * Sends a message to the text channel associated with the guild.
+     * @param message The message to send.
+     * @returns A promise that resolves when the message is sent.
+     */
+    messageOut = async (message: string): Promise<void> => {
+        if( !this.channelId || !this.client || !this.client.isReady() ) {
+            console.error('Cannot send message: Invalid channelId or client not ready.');
             return;
         }
-        
+
+        const channel = this.client.channels.cache.get(this.channelId);
+        if (!channel || channel.type !== ChannelType.GuildText) {
+            console.error('Invalid channel or channel is not a text channel.');
+            return;
+        }
+
         try {
-            await textChannel.send(message);
+            channel.send(message);
         } catch (error) {
-            console.error('Error sending message to text channel:', error);
-        }
-    };
-    
-    async getChannelByIdAndGuildId(
-        client: Client,
-        channelId: string, 
-        guildId: string
-    ): Promise<TextChannel | null> {
-        const guild: Guild | undefined = await client.guilds.fetch(guildId); // Fetch the guild
-
-        if (!guild) {
-            console.error(`Guild with ID ${guildId} not found.`); 
-            return null;
-        }
-
-        const channel = await guild.channels.fetch(channelId); // Fetch the channel from the guild
-        if (!channel) {
-            console.error(`Channel with ID ${channelId} not found in guild ${guild.name}.`); 
-            return null;
-        }
-
-        if (channel.type === ChannelType.GuildText) {
-            return channel as TextChannel; // Type assertion
-        } else {
-            console.warn(`Channel ${channel.name} (ID: ${channel.id}) is not a text channel.`);
-            return null;
+            console.error('Error sending channel message:', error);
         }
     };
     
@@ -88,7 +68,7 @@ class GuildAudioCommandHandler {
 };
 
 interface ValidatedInteractionData {
-    textChannel: TextChannel;
+    channelId: string;
     voiceChannel: VoiceBasedChannel;
     member: any;
     interaction: any; // ChatInputCommandInteraction
@@ -113,11 +93,17 @@ async function validateAndExtractInteractionData(interaction: Interaction): Prom
         throw new Error('Invalid member');
     }
     
-    const textChannel: TextChannel = interaction.channel as TextChannel;
-    if (!textChannel) {
-        console.error('Interaction channel is not a text channel.');
+    const channelId = interaction.channelId || (interaction.channel as TextBasedChannel)?.id || (interaction.channel as TextChannel)?.id;
+    if (!interaction.channel || !interaction.isChatInputCommand()) {
+        console.error('Interaction is not a text command.');
         await interaction.reply("This command can only be used in a text channel!");
-        throw new Error('Invalid text channel');
+        throw new Error('Invalid text command interaction');
+    }
+    
+    if(!channelId) {
+        console.error('Channel ID is not available in the interaction.');
+        await interaction.reply("Channel ID is not available in the interaction.");
+        throw new Error('Channel ID not found');
     }
 
     const voiceChannel = (member as any).voice.channel;
@@ -131,7 +117,7 @@ async function validateAndExtractInteractionData(interaction: Interaction): Prom
     console.log(`Channel ID: ${voiceChannel.id}, Guild ID: ${voiceChannel.guild.id}`);
     
     return {
-        textChannel,
+        channelId,
         voiceChannel,
         member,
         interaction
@@ -141,7 +127,7 @@ async function validateAndExtractInteractionData(interaction: Interaction): Prom
 async function getGuildAudioCommandHandler(
     client: Client,
     interaction: Interaction,
-    textChannel: TextChannel,
+    channelId: string,
     voiceChannel: VoiceBasedChannel,
     queuedAudioItem: QueuedAudioItem | null = null
 ): Promise<GuildAudioCommandHandler | null> {
@@ -155,7 +141,8 @@ async function getGuildAudioCommandHandler(
     let handler = GuildAudioCommandHandlers.get(guildId);
     if (handler) {
         console.log(`Found existing handler for guild ${guildId}`);
-        handler.lastTextChannel = textChannel;
+        console.log(`assigning channelId: ${channelId} to existing handler`);
+        handler.channelId = channelId;
         return handler;
     }
 
@@ -196,7 +183,14 @@ async function getGuildAudioCommandHandler(
     });
 
     if (queuedAudioItem) {
-        const newHandler = new GuildAudioCommandHandler(guildId, client, textChannel, voiceChannel, connection, onCloseConnection, queuedAudioItem);
+        const newHandler = new GuildAudioCommandHandler(
+            guildId,
+            client,
+            voiceChannel,
+            connection,
+            onCloseConnection,
+            queuedAudioItem,
+            channelId);
         if(newHandler.channelAudioPlayer) {
             GuildAudioCommandHandlers.set(guildId, newHandler);
             return newHandler;
@@ -227,7 +221,7 @@ module.exports = {
             ],
             execute: async (client: Client, interaction: Interaction) => {
                 try {
-                    const { textChannel, voiceChannel, interaction: validatedInteraction } = await validateAndExtractInteractionData(interaction);
+                    const { channelId, voiceChannel, interaction: validatedInteraction } = await validateAndExtractInteractionData(interaction);
                     
                     const url = validatedInteraction.options.getString('url', true);
                 
@@ -252,7 +246,7 @@ module.exports = {
                         return;
                     }
                     
-                    const commandHandler = await getGuildAudioCommandHandler(client, interaction, textChannel, voiceChannel, queuedAudioItem)
+                    const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel, queuedAudioItem)
                     await commandHandler?.channelAudioPlayer?.addToQueue(queuedAudioItem);
                     
                 } catch (error) {
@@ -272,12 +266,12 @@ module.exports = {
             options: [ ],
             execute: async (client: Client, interaction: Interaction) => {
                 try {
-                    const { textChannel, voiceChannel, interaction: validatedInteraction } = await validateAndExtractInteractionData(interaction);
+                    const { channelId, voiceChannel, interaction: validatedInteraction } = await validateAndExtractInteractionData(interaction);
                     
                     // Reply immediately to avoid timeout
                     await validatedInteraction.reply(`User stopping currently playing audio`);
                     
-                    const commandHandler = await getGuildAudioCommandHandler(client, interaction, textChannel, voiceChannel)
+                    const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel)
                     await commandHandler?.channelAudioPlayer?.stop()
                     
                 } catch (error) {
@@ -297,12 +291,12 @@ module.exports = {
             options: [ ],
             execute: async (client: Client, interaction: Interaction) => {
                 try {
-                    const { textChannel, voiceChannel, interaction: validatedInteraction } = await validateAndExtractInteractionData(interaction);
+                    const { channelId, voiceChannel, interaction: validatedInteraction } = await validateAndExtractInteractionData(interaction);
                     
                     // Reply immediately to avoid timeout
                     await validatedInteraction.reply(`User Skipping Currently Playing Audio`);
                     
-                    const commandHandler = await getGuildAudioCommandHandler(client, interaction, textChannel, voiceChannel);
+                    const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel);
                     await commandHandler?.channelAudioPlayer?.skip();
                     
                 } catch (error) {
@@ -322,12 +316,12 @@ module.exports = {
             options: [ ],
             execute: async (client: Client, interaction: Interaction) => {
                 try {
-                    const { textChannel, voiceChannel, interaction: validatedInteraction } = await validateAndExtractInteractionData(interaction);
+                    const { channelId, voiceChannel, interaction: validatedInteraction } = await validateAndExtractInteractionData(interaction);
                     
                     // Reply immediately to avoid timeout
                     await validatedInteraction.reply(`User Pausing Currently Playing Audio`);
                     
-                    const commandHandler = await getGuildAudioCommandHandler(client, interaction, textChannel, voiceChannel);
+                    const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel);
                     await commandHandler?.channelAudioPlayer?.pause();
 
                 } catch (error) {
@@ -347,12 +341,12 @@ module.exports = {
             options: [ ],
             execute: async (client: Client, interaction: Interaction) => {
                 try {
-                    const { textChannel, voiceChannel, interaction: validatedInteraction } = await validateAndExtractInteractionData(interaction);
+                    const { channelId, voiceChannel, interaction: validatedInteraction } = await validateAndExtractInteractionData(interaction);
                     
                     // Reply immediately to avoid timeout
                     await validatedInteraction.reply(`User Resuming Currently Paused Audio`);
-                    
-                    const commandHandler = await getGuildAudioCommandHandler(client, interaction, textChannel, voiceChannel);
+
+                    const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel);
                     await commandHandler?.channelAudioPlayer?.resume();
 
                 } catch (error) {
@@ -366,6 +360,84 @@ module.exports = {
                     }
                 }
             },
+        },
+        playing: {
+            description: "Get currently playing audio in a voice channel, and any queued audio",
+            options: [ ],
+            execute: async (client: Client, interaction: Interaction) => {
+                try {
+                    const { channelId, voiceChannel, interaction: validatedInteraction } = await validateAndExtractInteractionData(interaction);
+                    
+                    // Reply immediately to avoid timeout
+                    await validatedInteraction.reply(`User requesting currently playing audio`);
+                    
+                    const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel);
+                    if(commandHandler?.channelAudioPlayer) {
+                        const currentAudio = commandHandler.channelAudioPlayer.getCurrentAudio();
+                        const queue = commandHandler.channelAudioPlayer.getQueue();
+                        let responseMessage = `Currently playing audio:\n`;
+                        if(currentAudio) {
+                            responseMessage += `- ${currentAudio.UserInputUrl}\n`;
+                        } else {
+                            responseMessage += `- No audio is currently playing.\n`;
+                        }
+                        if(queue.length > 0) {
+                            responseMessage += `\nQueued audio:\n`;
+                            queue.forEach((item, index) => {
+                                if(index <= 5) {
+                                    responseMessage += `  ${index + 1}. <` + item.UserInputUrl + `>\n`;
+                                }
+                            });
+                        } else {
+                            responseMessage += `- No audio is queued.\n`;
+                        }
+                        if(queue.length > 5) {
+                            responseMessage += `\n...and ${queue.length - 5} more items in the queue.`;
+                        }
+                        await validatedInteraction.editReply(responseMessage);
+                    } else {
+                        await validatedInteraction.editReply("❌ No audio player found for this guild.");
+                    }
+                } catch (error) {
+                    console.error('Error processing audio playing command:', error);
+                    if (interaction.isChatInputCommand()) {
+                        if (interaction.replied || interaction.deferred) {
+                            await interaction.editReply(`❌ Failed to get currently playing audio`);
+                        } else {
+                            await interaction.reply(`❌ Failed to get currently playing audio`);
+                        }
+                    }
+                }
+            },
+        },
+        leave: {
+            description: "Leave the voice channel",
+            options: [ ],
+            execute: async (client: Client, interaction: Interaction) => {
+                try {
+                    const { channelId, voiceChannel, interaction: validatedInteraction } = await validateAndExtractInteractionData(interaction);
+
+                    // Reply immediately to avoid timeout
+                    await validatedInteraction.reply(`User requesting to leave voice channel`);
+
+                    const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel);
+                    const player = commandHandler?.channelAudioPlayer;
+                    if(player) {
+                        await player.stop();
+                        onCloseConnection(player);
+                    }
+
+                } catch (error) {
+                    console.error('Error processing audio leave command:', error);
+                    if (interaction.isChatInputCommand()) {
+                        if (interaction.replied || interaction.deferred) {
+                            await interaction.editReply(`❌ Failed to leave voice channel`);
+                        } else {
+                            await interaction.reply(`❌ Failed to leave voice channel`);
+                        }
+                    }
+                }
+            }
         },
     },
 };

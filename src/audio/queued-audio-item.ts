@@ -1,4 +1,5 @@
-const { spawn, execSync } = require('child_process');
+const promisify = require('util').promisify;
+const exec = promisify(require('child_process').exec);
 
 export class QueuedAudioItem {
     public UserInputUrl: string;
@@ -59,22 +60,23 @@ export class QueuedAudioItem {
             // Use yt-dlp to fetch the audio stream URL
             const command = `yt-dlp -f bestaudio -g "${url}"`;
             console.log(`Running command: ${command}`);
-            const output = execSync(command, { timeout: 30000 }).toString().trim();
+            let { stdout, stderr } = await exec(command, { timeout: 30000 });
 
-            if (!output) {
+            if (!stdout) {
                 console.error('Failed to extract audio stream URL.');
                 throw new Error('Failed to extract audio stream URL.');
             }
-
-            console.log(`Extracted audio stream URL: ${output}`);
+            
+            stdout = stdout.trim();
+            console.log(`Extracted audio stream URL: ${stdout}`);
             
             // Check if the extracted URL is valid
-            if (!output.startsWith('http')) {
-                console.error('Extracted URL is not valid:', output);
+            if (!stdout.startsWith('http')) {
+                console.error('Extracted URL is not valid:', stdout);
                 throw new Error('Extracted URL is not a valid HTTP URL');
             }
             
-            return output;
+            return stdout;
         } catch (error) {
             console.error('Error in fetchAudioStreamUrl:', error);
             throw error;
