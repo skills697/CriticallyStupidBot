@@ -1,5 +1,5 @@
 import { AudioPlayer, AudioResource, createAudioResource, StreamType, VoiceConnection } from "@discordjs/voice";
-import { Client, Interaction, VoiceBasedChannel, ApplicationCommandOptionType, TextBasedChannel, TextChannel, time, Guild, Channel} from "discord.js";
+import { Client, Interaction, VoiceBasedChannel, ApplicationCommandOptionType, TextBasedChannel, TextChannel, time, Guild, Channel, ChannelType} from "discord.js";
 import { ChannelAudioPlayer } from "../audio/channel-audio-player";
 import { QueuedAudioItem } from "../audio/queued-audio-item";
 const { spawn, execSync } = require('child_process');
@@ -14,7 +14,7 @@ class GuildAudioCommandHandler {
     constructor(
         public guildId: string,
         public client: Client,
-        public lastTextChannel: TextBasedChannel,
+        public lastTextChannel: TextChannel,
         public voiceChannel: VoiceBasedChannel,
         public connection: VoiceConnection,
         public closeConnectionCallback: (source: ChannelAudioPlayer | null) => void,
@@ -33,27 +33,62 @@ class GuildAudioCommandHandler {
             console.error('Error creating ChannelAudioPlayer:', error);
             this.channelAudioPlayer = null;
         }
-    }
+    };
     
     async messageOut(message: string): Promise<void> {
-        const channelOut = this.lastTextChannel;
-        if (channelOut && channelOut.isTextBased() && channelOut instanceof TextChannel) {
-            await channelOut.send(message);
-        } else {
-            console.error('Last text channel is not valid or not a text channel.');
+        const textChannel = await this.getChannelByIdAndGuildId(
+            this.client,
+            this.lastTextChannel.id,
+            this.guildId
+        );
+        if (!textChannel) {
+            console.error(`Text channel with ID ${this.lastTextChannel.id} not found in guild ${this.guildId}.`);
+            return;
         }
-    }
+        
+        try {
+            await textChannel.send(message);
+        } catch (error) {
+            console.error('Error sending message to text channel:', error);
+        }
+    };
+    
+    async getChannelByIdAndGuildId(
+        client: Client,
+        channelId: string, 
+        guildId: string
+    ): Promise<TextChannel | null> {
+        const guild: Guild | undefined = await client.guilds.fetch(guildId); // Fetch the guild
+
+        if (!guild) {
+            console.error(`Guild with ID ${guildId} not found.`); 
+            return null;
+        }
+
+        const channel = await guild.channels.fetch(channelId); // Fetch the channel from the guild
+        if (!channel) {
+            console.error(`Channel with ID ${channelId} not found in guild ${guild.name}.`); 
+            return null;
+        }
+
+        if (channel.type === ChannelType.GuildText) {
+            return channel as TextChannel; // Type assertion
+        } else {
+            console.warn(`Channel ${channel.name} (ID: ${channel.id}) is not a text channel.`);
+            return null;
+        }
+    };
     
     async destroy(): Promise<void> {
         if (this.channelAudioPlayer) {
             this.channelAudioPlayer.destroy();
             this.channelAudioPlayer = null;
         }
-    }
-}
+    };
+};
 
 interface ValidatedInteractionData {
-    textChannel: TextBasedChannel;
+    textChannel: TextChannel;
     voiceChannel: VoiceBasedChannel;
     member: any;
     interaction: any; // ChatInputCommandInteraction
@@ -78,7 +113,7 @@ async function validateAndExtractInteractionData(interaction: Interaction): Prom
         throw new Error('Invalid member');
     }
     
-    const textChannel = interaction.channel;
+    const textChannel: TextChannel = interaction.channel as TextChannel;
     if (!textChannel) {
         console.error('Interaction channel is not a text channel.');
         await interaction.reply("This command can only be used in a text channel!");
@@ -106,7 +141,7 @@ async function validateAndExtractInteractionData(interaction: Interaction): Prom
 async function getGuildAudioCommandHandler(
     client: Client,
     interaction: Interaction,
-    textChannel: TextBasedChannel,
+    textChannel: TextChannel,
     voiceChannel: VoiceBasedChannel,
     queuedAudioItem: QueuedAudioItem | null = null
 ): Promise<GuildAudioCommandHandler | null> {

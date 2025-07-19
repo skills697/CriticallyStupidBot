@@ -371,6 +371,7 @@ export class ChannelAudioPlayer {
             '-loglevel', 'error',
             '-c:a', 'copy',
             '-f', 'ogg',
+            '-filter:a', 'loudnorm',
             'pipe:1',
         ];
         const ffmpeg = spawn('ffmpeg', ffmpegArgs, {
