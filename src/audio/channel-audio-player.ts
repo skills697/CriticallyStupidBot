@@ -295,8 +295,11 @@ export class ChannelAudioPlayer {
         }
 
         console.log(`Stopping audio playback for channel ${this.channel.id}.`);
-        this.player.stop();
         this.playQueue = [];
+        this.currentItem = null;
+        this.currentItemChild = null;
+        this.playlistIndex = 0;
+        this.player.stop();
         this.messageOutCallback?.(`⏹️ Stopped audio playback for channel ${this.channel.id}, and cleared play queue.`);
     }
     
@@ -309,40 +312,17 @@ export class ChannelAudioPlayer {
             return;
         }
 
-        if (this.playQueue.length === 0 && (this.currentItem === null || !this.currentItem.isPlaylist || this.playlistIndex >= this.currentItem.playlistItemCount)) {
+        if (this.playQueue.length === 0 && (skipItemChild === false || this.currentItem === null || !this.currentItem.isPlaylist || this.playlistIndex >= this.currentItem.playlistItemCount)) {
             console.log(`No items to skip in queue for channel ${this.channel.id}.`);
             this.messageOutCallback?.(`❗ No items to skip in the queue.`);
             return;
         }
 
-        console.log(`Skipping current audio for channel ${this.channel.id}.`);
+        console.log(`Skipping current audio ${skipItemChild ? 'track' : 'playlist'} for channel ${this.channel.id}.`);
+        if(!skipItemChild) {
+            this.playlistIndex = (this.currentItem && this.currentItem.isPlaylist) ? this.currentItem.playlistItemCount + 1 : 0;
+        }
         this.player.stop();
-
-        if (skipItemChild && this.currentItem && this.currentItem.isPlaylist) {
-            this.playlistIndex++;
-            if (this.playlistIndex < this.currentItem.playlistItems.length) {
-                this.currentItemChild = await QueuedAudioItem.createFromUrl(this.currentItem.playlistItems[this.playlistIndex].url, this.currentItem.timestamp);
-                return;
-            }
-        }
-
-        const nextItem = this.playQueue.shift();
-        if (nextItem) {
-            console.log(`Playing next item after skip for channel ${this.channel.id}: ${nextItem.UserInputUrl}`);
-            this.currentItem = nextItem;
-            this.playlistIndex = 0;
-            if(this.currentItem.isPlaylist) {
-                this.playlistIndex = 0;
-                this.currentItemChild = await QueuedAudioItem.createFromUrl(this.currentItem.playlistItems[0].url, this.currentItem.timestamp);
-                console.log(`Playing playlist item ${this.playlistIndex + 1} of ${this.currentItem.playlistItems.length} for channel ${this.channel.id}: ${this.currentItemChild.UserInputUrl}`);
-                await this.playAudio(this.currentItemChild);
-            } else {
-                this.currentItemChild = null;
-                await this.playAudio(nextItem);
-            }
-        } else {
-            console.log(`No next item to play after skip for channel ${this.channel.id}.`);
-        }
     }
     
     /**
