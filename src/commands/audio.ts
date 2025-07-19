@@ -34,7 +34,7 @@ class GuildAudioCommandHandler {
             this.channelAudioPlayer = null;
         }
     };
-
+    
     /**
      * Sends a message to the text channel associated with the guild.
      * @param message The message to send.
@@ -240,11 +240,6 @@ module.exports = {
                         await validatedInteraction.editReply("❌ Invalid YouTube URL provided.");
                         return;
                     }
-                    else if(queuedAudioItem.isYoutubePlaylist) {
-                        console.error('YouTube playlists are not supported.');
-                        await validatedInteraction.editReply("❌ YouTube playlists are not supported.");
-                        return;
-                    }
                     
                     const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel, queuedAudioItem)
                     await commandHandler?.channelAudioPlayer?.addToQueue(queuedAudioItem);
@@ -297,7 +292,32 @@ module.exports = {
                     await validatedInteraction.reply(`User Skipping Currently Playing Audio`);
                     
                     const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel);
-                    await commandHandler?.channelAudioPlayer?.skip();
+                    await commandHandler?.channelAudioPlayer?.skip(true);
+                    
+                } catch (error) {
+                    console.error('Error processing audio skip command:', error);
+                    if (interaction.isChatInputCommand()) {
+                        if (interaction.replied || interaction.deferred) {
+                            await interaction.editReply(`❌ Failed to skip audio`);
+                        } else {
+                            await interaction.reply(`❌ Failed to skip audio`);
+                        }
+                    }
+                }
+            },
+        },
+        skiplist: {
+            description: "Skip playlist in a voice channel",
+            options: [ ],
+            execute: async (client: Client, interaction: Interaction) => {
+                try {
+                    const { channelId, voiceChannel, interaction: validatedInteraction } = await validateAndExtractInteractionData(interaction);
+                    
+                    // Reply immediately to avoid timeout
+                    await validatedInteraction.reply(`User Skipping Currently Playing Audio Playlist`);
+                    
+                    const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel);
+                    await commandHandler?.channelAudioPlayer?.skip(false);
                     
                 } catch (error) {
                     console.error('Error processing audio skip command:', error);
