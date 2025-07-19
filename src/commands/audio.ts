@@ -120,6 +120,7 @@ async function getGuildAudioCommandHandler(
     let handler = GuildAudioCommandHandlers.get(guildId);
     if (handler) {
         console.log(`Found existing handler for guild ${guildId}`);
+        handler.lastTextChannel = textChannel;
         return handler;
     }
 
@@ -332,4 +333,4 @@ module.exports = {
             },
         },
     },
-}
+};

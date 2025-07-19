@@ -7,6 +7,10 @@ export class QueuedAudioItem {
 
     public static async createFromUrl(url: string, timestamp: number | null = null): Promise<QueuedAudioItem> {
         const res = new QueuedAudioItem(url, timestamp);
+        if(!res.isValidUrl || !res.isYoutubeUrl || res.isYoutubePlaylist) {
+            console.error('Invalid YouTube URL provided.');
+            return res;
+        }
         await res.setOutputStreamUrl();
         return res;
     }
@@ -29,7 +33,7 @@ export class QueuedAudioItem {
     
     public get isYoutubePlaylist(): boolean {
         // Check if the URL is a valid YouTube playlist URL
-        const playlistRegex = /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.?be)\/(playlist\?list=|watch\?v=.+&list=).+$/;
+        const playlistRegex = /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.?be)\/.*(list=)([^#\&\?]*).+$/;
         return playlistRegex.test(this.UserInputUrl);
     }
     

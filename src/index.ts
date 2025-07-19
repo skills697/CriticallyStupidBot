@@ -14,21 +14,32 @@ const IsTestServer = false; // Set to true if you want to use the test server
 
 async function setGuildCommands(client: any, guildId: string | undefined) {
     // compare commands with the existing ones for this guild
-    const existingCommands = (guildId) 
-        ? await client.guilds.fetch(guildId).commands
+    const guild = guildId ? await client.guilds.cache.get(guildId) : null;
+    const applicationCommands = (guildId)
+        ? await guild.commands
         : await client.application?.commands
+        
+    if (applicationCommands) {
+        applicationCommands.fetch();
+    }
+
+    console.log('Loaded commands:', Array.from(client.commands.keys()));
+    console.log('Existing commands:', applicationCommands);
 
     const commandsToRegister: any[] = [];
     const commandsToEdit: any[] = [];
     const commandsToDelete: any[] = [];
-    if (existingCommands) {
+    if (applicationCommands) {
         for(const [name, command] of client.commands) {
-            if (existingCommands.has(name)) {
+            const existingCommand = await applicationCommands.cache.find(
+                (cmd:any) => cmd.name === name
+            );
+            if (existingCommand) {
                 console.log(`Command ${name} already exists.`);
                 commandsToEdit.push({
-                    id: existingCommands.get(name).id,
-                    description: command.description,
-                    options: command.options || [],
+                    id: existingCommand.id,
+                    description: existingCommand.description,
+                    options: existingCommand.options || [],
                 });
             } else {
                 console.log(`Command ${name} does not exist, will be registered.`);
@@ -39,9 +50,9 @@ async function setGuildCommands(client: any, guildId: string | undefined) {
                 });
             }
         }
-        for(const [name, existingCommand] of existingCommands) {
-            if (!client.commands.has(name)) {
-                console.log(`Command ${name} exists but is not in the current commands, will be deleted.`);
+        for(const existingCommand of applicationCommands.cache) {
+            if (!client.commands.has(existingCommand.name)) {
+                console.log(`Command ${existingCommand.name} exists but is not in the current commands, will be deleted.`);
                 commandsToDelete.push({
                     id: existingCommand.id,
                     name: existingCommand.name,
@@ -52,28 +63,31 @@ async function setGuildCommands(client: any, guildId: string | undefined) {
         }
     }
     
-    const appCommands = client.application?.commands;
-    
-    if (appCommands) {
+    console.log('Commands to register:', commandsToRegister);
+    console.log('Commands to edit:', commandsToEdit);
+    console.log('Commands to delete:', commandsToDelete); 
+    if (applicationCommands) {
         // Delete, register, and edit commands as needed
-        commandsToDelete.forEach((command:any) => {
-            appCommands.delete(command.id).then(() => {
+        for (const command of commandsToDelete) {
+            await applicationCommands.delete(command.id).then(() => {
                 console.log(`Command ${command.name} deleted successfully.`);
             }).catch(console.error);
-        });
-        commandsToRegister.forEach((command:any) => {
-            appCommands.create(command).then(() => {
+        }
+
+        for (const command of commandsToRegister) {
+            await applicationCommands.create(command).then(() => {
                 console.log(`Command ${command.name} registered successfully.`);
             }).catch(console.error);
-        });
-        commandsToEdit.forEach((command:any) => {
-            appCommands.edit(command.id, {
+        }
+
+        for (const command of commandsToEdit) {
+            await applicationCommands.edit(command.id, {
                 description: command.description,
                 options: command.options || [],
             }).then(() => {
                 console.log(`Command ${command.name} edited successfully.`);
             }).catch(console.error);
-        });
+        }
     } else {
         console.error('Application commands not found.');
     }
