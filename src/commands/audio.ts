@@ -10,6 +10,8 @@ const {
 
 class GuildAudioCommandHandler {
     public channelAudioPlayer: ChannelAudioPlayer | null = null;
+    public commandQueue: (() => Promise<void>)[] = [];
+    public isCommandRunning: boolean = false;
 
     constructor(
         public guildId: string,
@@ -17,7 +19,6 @@ class GuildAudioCommandHandler {
         public voiceChannel: VoiceBasedChannel,
         public connection: VoiceConnection,
         public closeConnectionCallback: (source: ChannelAudioPlayer | null) => void,
-        queuedAudioItem: QueuedAudioItem,
         public channelId: string, 
     ) {
         try {
@@ -32,6 +33,28 @@ class GuildAudioCommandHandler {
         catch (error) {
             console.error('Error creating ChannelAudioPlayer:', error);
             this.channelAudioPlayer = null;
+        }
+    };
+    
+    /**
+     * Adds a command to the queue and processes it.
+     * @param command The command to add to the queue.
+     */
+    public addCommandToQueue = async (command: () => Promise<void>): Promise<void> => {
+        this.commandQueue.push(command);
+        if (!this.isCommandRunning) {
+            this.isCommandRunning = true;
+            while (this.commandQueue.length > 0) {
+                const currentCommand = this.commandQueue.shift();
+                if (currentCommand) {
+                    try {
+                        await currentCommand();
+                    } catch (error) {
+                        console.error('Error executing command in queue:', error);
+                    }
+                }
+            }
+            this.isCommandRunning = false;
         }
     };
     
@@ -129,7 +152,6 @@ async function getGuildAudioCommandHandler(
     interaction: Interaction,
     channelId: string,
     voiceChannel: VoiceBasedChannel,
-    queuedAudioItem: QueuedAudioItem | null = null
 ): Promise<GuildAudioCommandHandler | null> {
     const guildId = interaction.guildId;
     if (!guildId) {
@@ -182,19 +204,16 @@ async function getGuildAudioCommandHandler(
         checkReady();
     });
 
-    if (queuedAudioItem) {
-        const newHandler = new GuildAudioCommandHandler(
-            guildId,
-            client,
-            voiceChannel,
-            connection,
-            onCloseConnection,
-            queuedAudioItem,
-            channelId);
-        if(newHandler.channelAudioPlayer) {
-            GuildAudioCommandHandlers.set(guildId, newHandler);
-            return newHandler;
-        }
+    const newHandler = new GuildAudioCommandHandler(
+        guildId,
+        client,
+        voiceChannel,
+        connection,
+        onCloseConnection,
+        channelId);
+    if(newHandler.channelAudioPlayer) {
+        GuildAudioCommandHandlers.set(guildId, newHandler);
+        return newHandler;
     }
     return null;
 }
@@ -228,21 +247,39 @@ module.exports = {
                     // Reply immediately to avoid timeout
                     await validatedInteraction.reply(`User Requesting audio from: ${url}`);
                 
-                    let queuedAudioItem = await QueuedAudioItem.createFromUrl(url, Date.now());
+                    let command = async () => {
+                        const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel);
+                        if(!commandHandler) {
+                            console.error('Failed to get command handler for guild:', interaction.guildId);
+                            await validatedInteraction.editReply("❌ Failed to get command handler for this guild.");
+                            return;
+                        }
+                        
+                        let queuedAudioItem = await QueuedAudioItem.createFromUrl(url, Date.now());
+                        if(!queuedAudioItem.isValidUrl) {
+                            console.error('Invalid URL provided. Must be a valid YouTube video URL.');
+                            // using messageOut here since interaction.editReply may have timed out during the QueuedAudioItem creation
+                            await commandHandler?.messageOut("❌ Invalid URL provided. Must be a valid YouTube video URL.");
+                            GuildAudioCommandHandlers.delete(commandHandler?.guildId);
+                            return;
+                        } else if(!queuedAudioItem.isYoutubeUrl) {
+                            console.error('Invalid YouTube URL provided.');
+                            // using messageOut here since interaction.editReply may have timed out during the QueuedAudioItem creation
+                            await commandHandler?.messageOut("❌ Invalid YouTube URL provided.");
+                            return;
+                        }
+                        
+                        await commandHandler?.channelAudioPlayer?.addToQueue(queuedAudioItem);
+                    };
                     
-                    if(!queuedAudioItem.isValidUrl) {
-                        console.error('Invalid URL provided. Must be a valid YouTube video URL.');
-                        await validatedInteraction.editReply("❌ Invalid URL provided. Must be a valid YouTube video URL.");
-                        return;
-                    }
-                    else if(!queuedAudioItem.isYoutubeUrl) {
-                        console.error('Invalid YouTube URL provided.');
-                        await validatedInteraction.editReply("❌ Invalid YouTube URL provided.");
-                        return;
-                    }
                     
-                    const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel, queuedAudioItem)
-                    await commandHandler?.channelAudioPlayer?.addToQueue(queuedAudioItem);
+                    const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel);
+                    if (commandHandler) {
+                        await commandHandler.addCommandToQueue(command);
+                    } else {
+                        console.error('Failed to get command handler for guild:', interaction.guildId);
+                        await validatedInteraction.editReply("❌ Failed to get command handler for this guild.");
+                    }
                     
                 } catch (error) {
                     console.error('Error processing audio play command:', error);
@@ -266,9 +303,30 @@ module.exports = {
                     // Reply immediately to avoid timeout
                     await validatedInteraction.reply(`User stopping currently playing audio`);
                     
-                    const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel)
-                    await commandHandler?.channelAudioPlayer?.stop()
+                    let command = async () => {
+                        const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel)
+                        if(!commandHandler) {
+                            console.error('Failed to get command handler for guild:', interaction.guildId);
+                            await validatedInteraction.editReply("❌ Failed to get command handler for this guild.");
+                            return;
+                        }
+                        if (commandHandler.channelAudioPlayer) {
+                            await commandHandler.channelAudioPlayer.stop();
+                        } else {
+                            console.error('No audio player found for this guild.');
+                            await validatedInteraction.editReply("❌ No audio player found for this guild.");
+                            GuildAudioCommandHandlers.delete(commandHandler.guildId);
+                            return;
+                        }
+                    }
                     
+                    const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel);
+                    if (commandHandler) {
+                        await commandHandler.addCommandToQueue(command);
+                    } else {
+                        console.error('Failed to get command handler for guild:', interaction.guildId);
+                        await validatedInteraction.editReply("❌ Failed to get command handler for this guild.");
+                    }
                 } catch (error) {
                     console.error('Error processing audio stop command:', error);
                     if (interaction.isChatInputCommand()) {
@@ -291,9 +349,30 @@ module.exports = {
                     // Reply immediately to avoid timeout
                     await validatedInteraction.reply(`User Skipping Currently Playing Audio`);
                     
-                    const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel);
-                    await commandHandler?.channelAudioPlayer?.skip(true);
+                    let command = async () => {
+                        const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel);
+                        if(!commandHandler) {
+                            console.error('Failed to get command handler for guild:', interaction.guildId);
+                            await validatedInteraction.editReply("❌ Failed to get command handler for this guild.");
+                            return;
+                        }
+                        if (commandHandler.channelAudioPlayer) {
+                            await commandHandler.channelAudioPlayer.skip(true);
+                        } else {
+                            console.error('No audio player found for this guild.');
+                            await validatedInteraction.editReply("❌ No audio player found for this guild.");
+                            GuildAudioCommandHandlers.delete(commandHandler.guildId);
+                            return;
+                        }
+                    }
                     
+                    const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel);
+                    if (commandHandler) {
+                        await commandHandler.addCommandToQueue(command);
+                    } else {
+                        console.error('Failed to get command handler for guild:', interaction.guildId);
+                        await validatedInteraction.editReply("❌ Failed to get command handler for this guild.");
+                    }
                 } catch (error) {
                     console.error('Error processing audio skip command:', error);
                     if (interaction.isChatInputCommand()) {
@@ -316,9 +395,30 @@ module.exports = {
                     // Reply immediately to avoid timeout
                     await validatedInteraction.reply(`User Skipping Currently Playing Audio Playlist`);
                     
-                    const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel);
-                    await commandHandler?.channelAudioPlayer?.skip(false);
+                    let command = async () => {
+                        const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel);
+                        if(!commandHandler) {
+                            console.error('Failed to get command handler for guild:', interaction.guildId);
+                            await validatedInteraction.editReply("❌ Failed to get command handler for this guild.");
+                            return;
+                        }
+                        if (commandHandler.channelAudioPlayer) {
+                            await commandHandler.channelAudioPlayer.skip(false);
+                        } else {
+                            console.error('No audio player found for this guild.');
+                            await validatedInteraction.editReply("❌ No audio player found for this guild.");
+                            GuildAudioCommandHandlers.delete(commandHandler.guildId);
+                            return;
+                        }
+                    }
                     
+                    const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel);
+                    if (commandHandler) {
+                        await commandHandler.addCommandToQueue(command);
+                    } else {
+                        console.error('Failed to get command handler for guild:', interaction.guildId);
+                        await validatedInteraction.editReply("❌ Failed to get command handler for this guild.");
+                    }
                 } catch (error) {
                     console.error('Error processing audio skip command:', error);
                     if (interaction.isChatInputCommand()) {
@@ -341,8 +441,24 @@ module.exports = {
                     // Reply immediately to avoid timeout
                     await validatedInteraction.reply(`User Pausing Currently Playing Audio`);
                     
-                    const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel);
-                    await commandHandler?.channelAudioPlayer?.pause();
+                    let command = async () => {
+                        // Get the command handler for the guild
+                        const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel);
+                        if(!commandHandler) {
+                            console.error('Failed to get command handler for guild:', interaction.guildId);
+                            await validatedInteraction.editReply("❌ Failed to get command handler for this guild.");
+                            return;
+                        }
+                        // Check if the channelAudioPlayer exists
+                        if (commandHandler.channelAudioPlayer) {
+                            await commandHandler.channelAudioPlayer.pause();
+                        } else {
+                            console.error('No audio player found for this guild.');
+                            await validatedInteraction.editReply("❌ No audio player found for this guild.");
+                            GuildAudioCommandHandlers.delete(commandHandler.guildId);
+                            return;
+                        }
+                    }
 
                 } catch (error) {
                     console.error('Error processing audio pause command:', error);
@@ -365,9 +481,33 @@ module.exports = {
                     
                     // Reply immediately to avoid timeout
                     await validatedInteraction.reply(`User Resuming Currently Paused Audio`);
+                    
+                    let command = async () => {
+                        const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel);
+                        if (!commandHandler) {
+                            console.error('Failed to get command handler for guild:', interaction.guildId);
+                            await validatedInteraction.editReply("❌ Failed to get command handler for this guild.");
+                            return;
+                        }
+                        
+                        // Check if the channelAudioPlayer exists
+                        if (commandHandler.channelAudioPlayer) {
+                            await commandHandler.channelAudioPlayer.resume();
+                        } else {
+                            console.error('No audio player found for this guild.');
+                            await validatedInteraction.editReply("❌ No audio player found for this guild.");
+                            GuildAudioCommandHandlers.delete(commandHandler.guildId);
+                            return;
+                        }
+                    }
 
                     const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel);
-                    await commandHandler?.channelAudioPlayer?.resume();
+                    if (commandHandler) {
+                        await commandHandler.addCommandToQueue(command);
+                    } else {
+                        console.error('Failed to get command handler for guild:', interaction.guildId);
+                        await validatedInteraction.editReply("❌ Failed to get command handler for this guild.");
+                    }
 
                 } catch (error) {
                     console.error('Error processing audio resume command:', error);
@@ -440,11 +580,32 @@ module.exports = {
                     // Reply immediately to avoid timeout
                     await validatedInteraction.reply(`User requesting to leave voice channel`);
 
+                    let command = async () => {
+                        const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel);
+                        if (!commandHandler) {
+                            console.error('Failed to get command handler for guild:', interaction.guildId);
+                            await validatedInteraction.editReply("❌ Failed to get command handler for this guild.");
+                            return;
+                        }
+
+                        const player = commandHandler.channelAudioPlayer;
+                        if(player) {
+                            await player.stop();
+                            onCloseConnection(player);
+                        } else {
+                            console.error('No audio player found for this guild.');
+                            await validatedInteraction.editReply("❌ No audio player found for this guild.");
+                            GuildAudioCommandHandlers.delete(commandHandler.guildId);
+                            return;
+                        }
+                    }
+
                     const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel);
-                    const player = commandHandler?.channelAudioPlayer;
-                    if(player) {
-                        await player.stop();
-                        onCloseConnection(player);
+                    if (commandHandler) {
+                        await commandHandler.addCommandToQueue(command);
+                    } else {
+                        console.error('Failed to get command handler for guild:', interaction.guildId);
+                        await validatedInteraction.editReply("❌ Failed to get command handler for this guild.");
                     }
 
                 } catch (error) {
