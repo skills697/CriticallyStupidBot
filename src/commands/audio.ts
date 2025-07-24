@@ -533,11 +533,20 @@ module.exports = {
                     
                     const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel);
                     if(commandHandler?.channelAudioPlayer) {
-                        const currentAudio = commandHandler.channelAudioPlayer.getCurrentAudio();
+                        const getDetails = (audioItem: QueuedAudioItem) => {
+                            return (audioItem.isPlaylist) ? `Playlist "${audioItem.displayTitle}" - ${audioItem.playlistItemCount} Items - Total Duration: ${audioItem.displayDuration} - <${audioItem.UserInputUrl}>`
+                             : `"${audioItem.displayTitle}" - Duration: ${audioItem.displayDuration} - <${audioItem.UserInputUrl}>`;
+                        }
+                        const [currentAudio, currentAudioChild] = commandHandler.channelAudioPlayer.currentAudioItem;
                         const queue = commandHandler.channelAudioPlayer.getQueue();
                         let responseMessage = `Currently playing audio:\n`;
                         if(currentAudio) {
-                            responseMessage += `- ${currentAudio.UserInputUrl}\n`;
+                            responseMessage += `- ${getDetails(currentAudio)}\n`;
+                            if(currentAudioChild) {
+                                let trackNumber = commandHandler.channelAudioPlayer.playlistIndex + 1;
+                                let trackCount = currentAudio.playlistItemCount || 1;
+                                responseMessage += `  - Currently Playing (${trackNumber} of ${trackCount}): ${getDetails(currentAudioChild)}\n`;
+                            }
                         } else {
                             responseMessage += `- No audio is currently playing.\n`;
                         }
@@ -545,7 +554,7 @@ module.exports = {
                             responseMessage += `\nQueued audio:\n`;
                             queue.forEach((item, index) => {
                                 if(index <= 5) {
-                                    responseMessage += `  ${index + 1}. <` + item.UserInputUrl + `>\n`;
+                                    responseMessage += `  ${index + 1}. ${getDetails(item)}\n`;
                                 }
                             });
                         } else {
