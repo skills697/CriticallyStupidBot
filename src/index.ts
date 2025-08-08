@@ -109,13 +109,25 @@ client.once('ready', () => {
     }
     
     // Set guild commands
-    const guildId = (IsTestServer) ? process.env.TEST_SERVER_ID : process.env.MAIN_SERVER_ID;
-    if (guildId) {
-        setGuildCommands(client, guildId).then(() => {
-            console.log(`Commands set for guild: ${guildId}`);
-        }).catch(console.error);
-    } else {
-        console.error('MAIN_SERVER_ID or TEST_SERVER_ID not set in .env file.');
+    const guildIds = process.env.ALL_SERVER_IDS ? process.env.ALL_SERVER_IDS.split(',') : [];
+    const isGuildSet = guildIds.length > 0;
+    for(const guildId of guildIds) {
+        if (guildId) {
+            setGuildCommands(client, guildId).then(() => {
+                console.log(`Commands set for guild: ${guildId}`);
+            }).catch(console.error);
+        }
+    }
+
+    if(!isGuildSet) {
+        const guildId = (IsTestServer) ? process.env.TEST_SERVER_ID : process.env.MAIN_SERVER_ID;
+        if (guildId) {
+            setGuildCommands(client, guildId).then(() => {
+                console.log(`Commands set for guild: ${guildId}`);
+            }).catch(console.error);
+        } else {
+            console.error('MAIN_SERVER_ID or TEST_SERVER_ID not set in .env file.');
+        }
     }
 });
 
