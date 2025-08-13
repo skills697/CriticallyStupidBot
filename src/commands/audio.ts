@@ -2,6 +2,7 @@ import { AudioPlayer, AudioResource, createAudioResource, StreamType, VoiceConne
 import { Client, Interaction, VoiceBasedChannel, ApplicationCommandOptionType, TextBasedChannel, TextChannel, time, Guild, Channel, ChannelType, WebhookClient} from "discord.js";
 import { ChannelAudioPlayer } from "../audio/channel-audio-player";
 import { QueuedAudioItem } from "../audio/queued-audio-item";
+import { PlaylistItem } from "../audio/playlist-item";
 const { spawn, execSync } = require('child_process');
 const {
     joinVoiceChannel,
@@ -254,24 +255,29 @@ module.exports = {
                             await validatedInteraction.editReply("❌ Failed to get command handler for this guild.");
                             return;
                         }
-                        
-                        let queuedAudioItem = await QueuedAudioItem.createFromUrl(url, Date.now());
-                        if(!queuedAudioItem.isValidUrl) {
+
+                        if(!QueuedAudioItem.isValidUrl(url)) {
                             console.error('Invalid URL provided. Must be a valid YouTube video URL.');
                             // using messageOut here since interaction.editReply may have timed out during the QueuedAudioItem creation
                             await commandHandler?.messageOut("❌ Invalid URL provided. Must be a valid YouTube video URL.");
                             GuildAudioCommandHandlers.delete(commandHandler?.guildId);
                             return;
-                        } else if(!queuedAudioItem.isYoutubeUrl) {
+                        } else if(!QueuedAudioItem.isYoutubeUrl(url)) {
                             console.error('Invalid YouTube URL provided.');
                             // using messageOut here since interaction.editReply may have timed out during the QueuedAudioItem creation
                             await commandHandler?.messageOut("❌ Invalid YouTube URL provided.");
                             return;
                         }
-                        
-                        await commandHandler?.channelAudioPlayer?.addToQueue(queuedAudioItem);
+
+                        try {
+                            let [queuedAudioItems, playlistItem] = await QueuedAudioItem.createFromUrl(url, validatedInteraction.user.id, Date.now());
+                            await commandHandler?.channelAudioPlayer?.addItemsToQueue(queuedAudioItems, playlistItem);
+                        }
+                        catch(error) {
+                            console.error('Error adding to queue:', error);
+                            await commandHandler?.messageOut("❌ Failed to add to queue.");
+                        }
                     };
-                    
                     
                     const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel);
                     if (commandHandler) {
@@ -403,7 +409,7 @@ module.exports = {
                             return;
                         }
                         if (commandHandler.channelAudioPlayer) {
-                            await commandHandler.channelAudioPlayer.skip(false);
+                            await commandHandler.channelAudioPlayer.skip(true);
                         } else {
                             console.error('No audio player found for this guild.');
                             await validatedInteraction.editReply("❌ No audio player found for this guild.");
@@ -533,20 +539,24 @@ module.exports = {
                     
                     const commandHandler = await getGuildAudioCommandHandler(client, validatedInteraction, channelId, voiceChannel);
                     if(commandHandler?.channelAudioPlayer) {
-                        const getDetails = (audioItem: QueuedAudioItem) => {
-                            return (audioItem.isPlaylist) ? `Playlist "${audioItem.displayTitle}" - ${audioItem.playlistItemCount} Items - Total Duration: ${audioItem.displayDuration} - <${audioItem.UserInputUrl}>`
-                             : `"${audioItem.displayTitle}" - Duration: ${audioItem.displayDuration} - <${audioItem.UserInputUrl}>`;
+                        const channelAudioPlayer = commandHandler.channelAudioPlayer;
+                        const getDetails = (audioItem: QueuedAudioItem, playlistItem: PlaylistItem | null) => {
+                            let out = "";
+                            if(playlistItem) {
+                                out += (playlistItem) ? `Playlist "${playlistItem.title}" - ${playlistItem.itemCount} Items - ` 
+                                        + `Total Duration: ${QueuedAudioItem.formatDuration(playlistItem.duration)} - <${playlistItem.url}>\n` : "";
+                                let trackNumber = audioItem.playlistIndex + 1;
+                                let trackCount = playlistItem.itemCount || 1;
+                                out += `  - Track (${trackNumber} of ${trackCount}): `;
+                            }
+                            out += `"${audioItem.title}" - Duration: ${audioItem.displayDuration} - <${audioItem.userInputUrl}>`;
+                            return out;
                         }
-                        const [currentAudio, currentAudioChild] = commandHandler.channelAudioPlayer.currentAudioItem;
-                        const queue = commandHandler.channelAudioPlayer.getQueue();
+                        const [currentAudio, currentPlaylistItem] = channelAudioPlayer.currentAudioItem;
+                        const queue = channelAudioPlayer.getQueue();
                         let responseMessage = `Currently playing audio:\n`;
                         if(currentAudio) {
-                            responseMessage += `- ${getDetails(currentAudio)}\n`;
-                            if(currentAudioChild) {
-                                let trackNumber = commandHandler.channelAudioPlayer.playlistIndex + 1;
-                                let trackCount = currentAudio.playlistItemCount || 1;
-                                responseMessage += `  - Currently Playing (${trackNumber} of ${trackCount}): ${getDetails(currentAudioChild)}\n`;
-                            }
+                            responseMessage += `- ${getDetails(currentAudio, currentPlaylistItem)}\n`;
                         } else {
                             responseMessage += `- No audio is currently playing.\n`;
                         }
@@ -554,7 +564,8 @@ module.exports = {
                             responseMessage += `\nQueued audio:\n`;
                             queue.forEach((item, index) => {
                                 if(index <= 5) {
-                                    responseMessage += `  ${index + 1}. ${getDetails(item)}\n`;
+                                    const playlistItem = channelAudioPlayer.getPlaylistItem(item);
+                                    responseMessage += `  ${index + 1}. ${getDetails(item, playlistItem)}\n`;
                                 }
                             });
                         } else {

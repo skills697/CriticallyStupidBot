@@ -1,6 +1,7 @@
 import { VoiceBasedChannel, VoiceConnectionStates } from "discord.js";
 import { AudioPlayer, AudioPlayerState, AudioPlayerStatus, AudioResource, createAudioPlayer, createAudioResource, NoSubscriberBehavior, StreamType, VoiceConnection, VoiceConnectionDisconnectReason, VoiceConnectionState} from "@discordjs/voice";
 import { QueuedAudioItem } from "./queued-audio-item";
+import { PlaylistItem } from "./playlist-item";
 const { spawn } = require('child_process');
 
 enum TimeoutType {
@@ -10,11 +11,9 @@ enum TimeoutType {
 
 export class ChannelAudioPlayer {
     public player: AudioPlayer | null = null;
+    public playlistItems: PlaylistItem[] = [];
     public playQueue: QueuedAudioItem[] = [];
-    public playlistIndex: number = 0;
     public currentItem: QueuedAudioItem | null = null;
-    public currentItemChild: QueuedAudioItem | null = null;
-    public nextItemChild: QueuedAudioItem | null = null;
     public messageOutCallback: ((message: string) => void) | null = null;
     
     // Timeout management
@@ -63,10 +62,24 @@ export class ChannelAudioPlayer {
         return this.connection.state.status || VoiceConnectionStates.Disconnected;
     }
 
-    public get currentAudioItem(): [QueuedAudioItem | null, QueuedAudioItem | null] {
-        return [this.currentItem, this.currentItemChild];
+    public get currentAudioItem(): [QueuedAudioItem | null, PlaylistItem | null] {
+        return [this.currentItem, this.playlistItems.find(item => item.playlistId === this.currentItem?.playlistId) || null];
+    }
+
+    public get isCurrentItemPlaylist(): boolean {
+        const playlist = this.playlistItems.find(item => item.playlistId === this.currentItem?.playlistId);
+        return playlist !== undefined;
+    }
+
+    public get currentPlaylistItem(): PlaylistItem | null {
+        return this.playlistItems.find(item => item.playlistId === this.currentItem?.playlistId) || null;
     }
     
+    public get remainingPlaylistCount(): number {
+        const playlist: PlaylistItem | null = this.currentPlaylistItem;
+        return this.playQueue.filter(item => item.playlistId === playlist?.playlistId).length || 0;
+    }
+
     /**
      * Handles changes in the audio player state
      * @param oldState The previous state of the audio player
@@ -124,8 +137,6 @@ export class ChannelAudioPlayer {
         
         if(type === TimeoutType.IDLE) {
             this.currentItem = null;
-            this.currentItemChild = null;
-            this.playlistIndex = 0;
         }
         
         this.currentTimeout = setTimeout(() => {
@@ -147,20 +158,38 @@ export class ChannelAudioPlayer {
             console.log(`Cleared inactivity timeout for channel ${this.channel.id}`);
         }
     }
+
+    public async addItemsToQueue(items: QueuedAudioItem[], playlist: PlaylistItem | null): Promise<void> {
+        if(playlist) {
+            this.playlistItems.push(playlist);
+            console.log(`Added playlist to queue for channel ${this.channel.id}: ${playlist.title}`);
+        }
+
+        for(const item of items) {
+            this.playQueue.push(item);
+            console.log(`Added item to queue for channel ${this.channel.id}: ${item.userInputUrl}`);
+        }    
+        await this.checkAndUpdatePlayerState();
+    }
     
     /**
      * Adds an audio item to the play queue and checks the player state to start playback if necessary 
      * @param item The audio item to add to the queue
      * @throws Error if the URL is invalid or if the audio player is not initialized
      */
-    public async addToQueue(item: QueuedAudioItem): Promise<void> {
+    public async addToQueue(item: QueuedAudioItem, playlist: PlaylistItem | null): Promise<void> {
         if (!item.isValidUrl) {
             console.error('Invalid URL provided. Cannot add to queue.');
             throw new Error('Invalid URL provided. Must be a valid YouTube video URL.');
         }
         
         this.playQueue.push(item);
-        console.log(`Added item to queue for channel ${this.channel.id}: ${item.UserInputUrl}`);
+        console.log(`Added item to queue for channel ${this.channel.id}: ${item.userInputUrl}`);
+        
+        if(playlist) {
+            this.playlistItems.push(playlist);
+            console.log(`Added playlist to queue for channel ${this.channel.id}: ${playlist.title}`);
+        }
         
         await this.checkAndUpdatePlayerState();
     }
@@ -169,13 +198,14 @@ export class ChannelAudioPlayer {
      * Checks the current state of the audio player and updates it if necessary
      */
     private async checkAndUpdatePlayerState(): Promise<void> {
-        if (this.playQueue.length === 0 && (!this.currentItem || !this.currentItem.isPlaylist || this.playlistIndex >= this.currentItem.playlistItemCount)) {
-            console.log(`No items in queue for channel ${this.channel.id}.`);
+        this.clearUnusedPlaylistItems();
+
+        if( this.audioPlayerStatus === AudioPlayerStatus.Playing || this.audioPlayerStatus === AudioPlayerStatus.Paused) {
             return;
         }
-        
-        if( this.audioPlayerStatus === AudioPlayerStatus.Playing || this.audioPlayerStatus === AudioPlayerStatus.Paused) {
-            console.log(`Audio player is already playing or paused for channel ${this.channel.id}.`);
+
+        if (this.playQueue.length === 0) {
+            console.log(`No items in queue for channel ${this.channel.id}.`);
             return;
         }
         
@@ -186,50 +216,36 @@ export class ChannelAudioPlayer {
         
         if (this.audioPlayerStatus === AudioPlayerStatus.Idle) {
             console.log(`Audio player is idle for channel ${this.channel.id}. Attempting to play next item.`);
-            if(this.currentItem && this.currentItem.isPlaylist) {
-                this.playlistIndex++;
-                if(this.playlistIndex < this.currentItem.playlistItems.length) {
-                    // Play the next item in the playlist collection
-                    if(this.nextItemChild) {
-                        this.currentItemChild = this.nextItemChild;
-                        this.nextItemChild = null;
-                    } else {
-                        const child = this.currentItem.playlistItems[this.playlistIndex];
-                        this.currentItemChild = (this.nextItemChild) ? this.nextItemChild : await QueuedAudioItem.createFromUrl(child.url, this.currentItem.timestamp);
-                        this.nextItemChild = null;
-                    }
-                    console.log(`Playing playlist item ${this.playlistIndex + 1} of ${this.currentItem.playlistItems.length} for channel ${this.channel.id}: ${this.currentItemChild.UserInputUrl}`);
-                    await this.playAudio(this.currentItemChild);
-                    if((this.playlistIndex + 1) < this.currentItem.playlistItems.length) {
-                        console.log(`Preparing next item in current playlist for channel ${this.channel.id}: ${this.currentItem.playlistItems[this.playlistIndex + 1].url}`);
-                        this.nextItemChild = await QueuedAudioItem.createFromUrl(this.currentItem.playlistItems[this.playlistIndex + 1].url, this.currentItem.timestamp);
-                    }
-                    return;
-                }
-            }
 
             // Next queued item
             const nextItem = this.playQueue.shift();
             if (nextItem) {
-                console.log(`Playing next item from queue for channel ${this.channel.id}: ${nextItem.UserInputUrl}`);
+                console.log(`Playing next item from queue for channel ${this.channel.id}: ${nextItem.userInputUrl}`);
                 this.currentItem = nextItem;
-                if( this.currentItem.isPlaylist) {
-                    this.playlistIndex = 0;
-                    this.currentItemChild = await QueuedAudioItem.createFromUrl(this.currentItem.playlistItems[0].url, this.currentItem.timestamp);
-                    console.log(`Playing playlist item ${this.playlistIndex + 1} of ${this.currentItem.playlistItems.length} for channel ${this.channel.id}: ${this.currentItemChild.UserInputUrl}`);
-                    await this.playAudio(this.currentItemChild);
-                    if(this.currentItem.playlistItemCount > 1) {
-                        console.log(`Preparing next item in current playlist for channel ${this.channel.id}: ${this.currentItem.playlistItems[1].url}`);
-                        this.nextItemChild = await QueuedAudioItem.createFromUrl(this.currentItem.playlistItems[1].url, this.currentItem.timestamp);
-                    }
-                } else {
-                    this.currentItemChild = null; // Reset child item for non-playlist
-                    this.playlistIndex = 0;
-                    await this.playAudio(nextItem);
+                if(!nextItem.isOutputUrlSet){
+                    console.log(`Setting output stream URL for item in channel ${this.channel.id}: ${nextItem.userInputUrl}`);
+                    await nextItem.setOutputStreamUrl();
+                }
+                await this.playAudio(nextItem);
+                
+                if(this.playQueue.length > 0) {
+                    this.playQueue[0].setOutputStreamUrl();
                 }
             } else {
                 console.log(`No next item to play for channel ${this.channel.id}.`);
             }
+        }
+    }
+    
+    /**
+     * Clears unused playlist items that are not part of the current play queue
+     */
+    private async clearUnusedPlaylistItems() {
+        const playlistCount = this.playlistItems.length;
+        const usedPlaylistItemIds = new Set(this.playQueue.map(item => item.playlistId));
+        this.playlistItems = this.playlistItems.filter(item => usedPlaylistItemIds.has(item.playlistId));
+        if(this.playlistItems.length < playlistCount) {
+            console.log(`Cleared ${playlistCount - this.playlistItems.length} unused playlist items for channel ${this.channel.id}.`);
         }
     }
     
@@ -239,7 +255,7 @@ export class ChannelAudioPlayer {
     private handleStatusChange(status: AudioPlayerStatus): void {
         switch (status) {
             case AudioPlayerStatus.Idle:
-                if (this.playQueue.length === 0 && (this.currentItem === null || !this.currentItem.isPlaylist || this.playlistIndex >= this.currentItem.playlistItemCount)) {
+                if (this.playQueue.length === 0) {
                     this.setInactivityTimeout(TimeoutType.IDLE);
                 } else {
                     this.clearInactivityTimeout();
@@ -272,7 +288,7 @@ export class ChannelAudioPlayer {
             throw new Error('Audio player is not initialized. Cannot play audio.');
         }
         
-        if (!item.OutputStreamUrl) {
+        if (!item.outputStreamUrl) {
             console.error('Output stream URL is not set for the item. Cannot play audio.');
             throw new Error('Output stream URL is not set for the item. Cannot play audio.');
         }
@@ -282,15 +298,17 @@ export class ChannelAudioPlayer {
             this.player.stop();
         }
         
-        console.log(`Playing audio for item in channel ${this.channel.id}: ${item.UserInputUrl}`);
+        console.log(`Playing audio for item in channel ${this.channel.id}: ${item.userInputUrl}`);
         
-        const resource = await this.createAudioStream(item.OutputStreamUrl);
+        const resource = await this.createAudioStream(item.outputStreamUrl);
         this.player.play(resource);
 
-        let itemDetails = `"${item.displayTitle}" - ${item.displayDuration} - <${item.UserInputUrl}>`;
-        if(this.currentItem && this.currentItem.isPlaylist) {
-            const playlistDetails = `Playlist "${this.currentItem.displayTitle}" - ${this.currentItem.playlistItemCount} Items - Total Duration: ${this.currentItem.displayDuration}`;
-            this.messageOutCallback?.(`▶️ Now Playing ${playlistDetails}\n[#${this.playlistIndex + 1} of ${this.currentItem.playlistItems.length}]: ${itemDetails}`);
+        let itemDetails = `"${item.title}" - ${item.displayDuration} - <${item.userInputUrl}>`;
+        if(this.currentItem && this.isCurrentItemPlaylist) {
+            const playlistItem = this.currentPlaylistItem;
+            const playlistDetails = `Playlist "${playlistItem?.title}" - ${playlistItem?.itemCount} Items - `
+                + `Total Duration: ${QueuedAudioItem.formatDuration(playlistItem?.duration || 0)}`;
+            this.messageOutCallback?.(`▶️ Now Playing ${playlistDetails}\n[#${this.currentItem.playlistIndex + 1} of ${playlistItem?.itemCount}]: ${this.currentItem.title}`);
         } else {
             this.messageOutCallback?.(`▶️ Now playing: ${itemDetails}`)
         }
@@ -314,9 +332,6 @@ export class ChannelAudioPlayer {
         console.log(`Stopping audio playback for channel ${this.channel.id}.`);
         this.playQueue = [];
         this.currentItem = null;
-        this.currentItemChild = null;
-        this.nextItemChild = null;
-        this.playlistIndex = 0;
         this.player.stop();
         this.messageOutCallback?.(`⏹️ Stopped audio playback and cleared play queue.`);
     }
@@ -324,22 +339,33 @@ export class ChannelAudioPlayer {
     /**
      * Skips the current audio playback and plays the next item in the queue
      */
-    public async skip(skipItemChild: boolean = true): Promise<void> {
+    public async skip(skipItemList: boolean = false): Promise<void> {
         if (!this.player) {
             console.error('Audio player is not initialized.');
             return;
         }
 
-        if (this.playQueue.length === 0 && (skipItemChild === false || this.currentItem === null || !this.currentItem.isPlaylist || this.playlistIndex >= this.currentItem.playlistItemCount)) {
+        if (this.playQueue.length === 0) {
             console.log(`No items to skip in queue for channel ${this.channel.id}.`);
             this.messageOutCallback?.(`❗ No items to skip in the queue.`);
             return;
         }
 
-        console.log(`Skipping current audio ${skipItemChild ? 'track' : 'playlist'} for channel ${this.channel.id}.`);
-        if(!skipItemChild) {
-            this.playlistIndex = (this.currentItem && this.currentItem.isPlaylist) ? this.currentItem.playlistItemCount + 1 : 0;
-            this.nextItemChild = null;
+        console.log(`Skipping current audio ${skipItemList ? 'playlist' : 'track'} for channel ${this.channel.id}.`);
+        if (skipItemList) {
+            const playlistId = this.currentItem?.playlistId || '';
+            let skipItemCount = 0;
+            for(let i=0; i<this.playQueue.length; i++) {
+                const item = this.playQueue[i];
+                if(item.playlistId !== playlistId) {
+                    skipItemCount = i;
+                    break;
+                }
+            }
+            if(skipItemCount > 0)
+            {
+                this.playQueue.splice(0, skipItemCount);
+            }
         }
         this.player.stop();
     }
@@ -388,6 +414,11 @@ export class ChannelAudioPlayer {
     
     public getQueue(): QueuedAudioItem[] {
         return this.playQueue;
+    }
+
+    public getPlaylistItem(queuedItem: QueuedAudioItem): PlaylistItem | null {
+        if (!queuedItem || !queuedItem.playlistId) return null;
+        return this.playlistItems.find(item => item.playlistId === queuedItem.playlistId) || null;
     }
 
     /**
