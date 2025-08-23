@@ -545,7 +545,7 @@ module.exports = {
                             if(playlistItem) {
                                 out += (playlistItem) ? `Playlist "${playlistItem.title}" - ${playlistItem.itemCount} Items - ` 
                                         + `Total Duration: ${QueuedAudioItem.formatDuration(playlistItem.duration)} - <${playlistItem.url}>\n` : "";
-                                let trackNumber = audioItem.playlistIndex + 1;
+                                let trackNumber = audioItem.playlistIndex;
                                 let trackCount = playlistItem.itemCount || 1;
                                 out += `  - Track (${trackNumber} of ${trackCount}): `;
                             }

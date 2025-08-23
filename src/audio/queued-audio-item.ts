@@ -129,7 +129,7 @@ export class QueuedAudioItem {
 
         try {
             // Use yt-dlp to fetch the audio stream URL
-            const command = `yt-dlp -f bestaudio -g "${url}"`;
+            const command = `yt-dlp -f bestaudio -g "${url}" -S proto:https`;
             console.log(`Running command: ${command}`);
             let { stdout, stderr } = await exec(command, { timeout: 30000 });
 
@@ -140,7 +140,7 @@ export class QueuedAudioItem {
             
             stdout = stdout.trim();
             console.log(`Extracted audio stream URL: ${stdout}`);
-            
+
             // Check if the extracted URL is valid
             if (!stdout.startsWith('http')) {
                 console.error('Extracted URL is not valid:', stdout);
@@ -240,7 +240,7 @@ export class QueuedAudioItem {
             console.error('Failed to extract metadata.');
             return null;
         }
-        
+
         const jsonData = JSON.parse(stdout.trim());
 
         const newItem = new QueuedAudioItem(

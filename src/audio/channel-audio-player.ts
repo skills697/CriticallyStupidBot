@@ -308,7 +308,7 @@ export class ChannelAudioPlayer {
             const playlistItem = this.currentPlaylistItem;
             const playlistDetails = `Playlist "${playlistItem?.title}" - ${playlistItem?.itemCount} Items - `
                 + `Total Duration: ${QueuedAudioItem.formatDuration(playlistItem?.duration || 0)}`;
-            this.messageOutCallback?.(`▶️ Now Playing ${playlistDetails}\n[#${this.currentItem.playlistIndex + 1} of ${playlistItem?.itemCount}]: ${this.currentItem.title}`);
+            this.messageOutCallback?.(`▶️ Now Playing ${playlistDetails}\n[#${this.currentItem.playlistIndex} of ${playlistItem?.itemCount}]: ${this.currentItem.title}`);
         } else {
             this.messageOutCallback?.(`▶️ Now playing: ${itemDetails}`)
         }
