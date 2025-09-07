@@ -3,6 +3,7 @@ import { PlaylistItem } from "./playlist-item";
 const promisify = require('util').promisify;
 const exec = promisify(require('child_process').exec);
 const fs = require('fs');
+import { execFile } from "child_process";
 
 export class QueuedAudioItem {
     public userInputUrl: string;
@@ -44,7 +45,8 @@ export class QueuedAudioItem {
             }
         } else {
             try {
-                const newItem = await QueuedAudioItem.fetchMetadata(url, user);
+                //const newItem = await QueuedAudioItem.fetchMetadata(url, user);
+                const newItem = await QueuedAudioItem.fetchMetadataAndAudioUrl(url, user);
                 if (newItem) {
                     res.push(newItem);
                 } else {
@@ -52,8 +54,29 @@ export class QueuedAudioItem {
                 }
             } catch (error) {
                 console.error('Error fetching metadata:', error);
+                throw error;
             }
         }
+        // try {
+        //     console.log(`Fetching media items for: ${url}`);
+        //     const [items, fetchedPlaylist] = await QueuedAudioItem.fetchMediaList(url, user);
+
+        //     if (items && items.length > 0) {
+        //         if (fetchedPlaylist) {
+        //             res.push(...items);
+        //             playlistItem = fetchedPlaylist;
+        //             console.log(`Fetched ${items.length} items from playlist.`);
+        //         } else if (items.length === 1) {
+        //             res.push(...items);
+        //             console.log(`Fetched single video item.`);
+        //         }
+        //     } else {
+        //         console.warn('No items found in the playlist or missing metadata.');
+        //     }
+        // } catch (error) {
+        //     console.error('Error fetching playlist items:', error);
+        //     throw error;
+        // }
         return [res, playlistItem];
     }
     
@@ -114,6 +137,10 @@ export class QueuedAudioItem {
 
         this.outputStreamUrl = await QueuedAudioItem.fetchAudioStreamUrl(this.userInputUrl);
     }
+    
+    public setOutputStreamUrlDirectly(url: string): void {
+        this.outputStreamUrl = url;
+    }
 
     public get displayDuration(): string {
         return QueuedAudioItem.formatDuration(this.duration);
@@ -159,7 +186,7 @@ export class QueuedAudioItem {
             const command = `yt-dlp -j --flat-playlist "${url}"`;
             console.log(`Running command: ${command}`);
             
-            const { stdout, stderr } = await exec(command, { timeout: 60000 }); // Longer timeout for playlists
+            const { stdout, stderr } = await exec(command, { timeout: 60000, maxBuffer: 10 * 1024 * 1024 }); // Longer timeout for playlists
             
             if (!stdout) {
                 console.error('Failed to extract playlist items.');
@@ -257,6 +284,141 @@ export class QueuedAudioItem {
         );
 
         return newItem;
+    }
+
+    public static async fetchMetadataAndAudioUrl(url: string, user: string): Promise<QueuedAudioItem | null> {
+        if (!/^https?:\/\//i.test(url)) {
+            throw new Error("Invalid URL provided. Must start with http or https.");
+        }
+
+        // Single yt-dlp call that prints one JSON object
+        const command = [
+          'yt-dlp',
+          '-f', 'bestaudio',
+          '-S', 'proto:https',
+          '--no-playlist',
+          '--no-warnings',
+          '--print',
+          // JSON template (newlines allowed; shell treats it as one arg)
+          `'{"title": %(title)j, "duration": %(duration)j, "uploader": %(uploader)j, "upload_date": %(upload_date)j, "view_count": %(view_count)j, "description": %(description)j, "thumbnail": %(thumbnail)j, "id": %(id)j, "webpage_url": %(webpage_url)j, "audio_url": %(url)j}'`,
+          `"${url}"`
+        ].join(' ');
+        console.log(`Running YT-DLP command: ${command}`);
+        
+        const { stdout, stderr } = await exec(command, { timeout: 30000 });
+
+        if (!stdout) {
+            console.error('Failed to extract metadata.');
+            return null;
+        }
+
+        const jsonData = JSON.parse(stdout.trim());
+
+        const newItem = new QueuedAudioItem(
+            url,
+            user,
+            jsonData.title || 'Unknown Title',
+            jsonData.duration || 0,
+            jsonData.uploader || 'Unknown',
+            jsonData.upload_date || '',
+            jsonData.view_count || 0,
+            jsonData.description || '',
+            Date.now(),
+            jsonData.thumbnail || ''
+        );
+        
+        if(jsonData.audio_url && typeof jsonData.audio_url === 'string' && jsonData.audio_url.startsWith('http')) {
+            console.log(` + Extracted audio stream URL: ${jsonData.audio_url}`);
+            newItem.setOutputStreamUrlDirectly(jsonData.audio_url || null);
+        } else {
+            console.warn(' + No valid audio URL found in metadata.');
+            return null;
+        }
+
+        return newItem;
+    }
+    
+
+    public static fetchMediaList(url: string, user: string): Promise<[QueuedAudioItem[], PlaylistItem | null]> {
+        if (!/^https?:\/\//i.test(url)) {
+            return Promise.reject(new Error("URL must start with http or https."));
+        }
+
+        // Single template for both single video and playlist entries
+        const template =
+            '{"title": %(title)j, "duration": %(duration)j, "uploader": %(uploader)j, "upload_date": %(upload_date)j, "view_count": %(view_count)j, "description": %(description)j, "thumbnail": %(thumbnail)j, "id": %(id)j, "webpage_url": %(webpage_url)j, "audio_url": %(url)j, , "playlist_title": %(playlist_title)j, "playlist_id": %(playlist_id)j, "playlist_description": %(playlist_description)j, "playlist_index": %(playlist_index)j, "playlist_uploader": %(playlist_uploader)j}';
+
+        const args = [
+            "-f", "bestaudio",
+            "-S", "proto:https",
+            "--yes-playlist",          // single URL -> 1 line; playlist -> many lines
+            "--no-warnings",
+            "--print", template,
+            url
+        ];
+
+        let playlistTitle = '';
+        let playlistUploader = '';
+        let playlistDescription = '';
+        let playlistId = '';
+        let playlistDuration = 0;
+
+        return new Promise<[QueuedAudioItem[], PlaylistItem | null]>((resolve, reject) => {
+            execFile("yt-dlp", args, { maxBuffer: 24 * 1024 * 1024, timeout: 120000 }, (err, stdout, stderr) => {
+                if (err) return reject(err);
+                const items: QueuedAudioItem[] = [];
+
+                for (const line of stdout.split(/\r?\n/)) {
+                    const t = line.trim();
+                    if (!t) continue;
+                    try {
+                        const obj = JSON.parse(t);
+                        if (!playlistTitle && obj.playlist_title
+                            && !playlistId && obj.playlist_id
+                        ) {
+                            playlistId = obj.playlist_id || '';
+                            playlistTitle = obj.playlist_title;
+                            playlistUploader = obj.playlist_uploader || obj.uploader || 'Unknown';
+                            playlistDescription = obj.playlist_description || obj.description || '';
+                        }
+                        if (obj.audio_url?.startsWith("http")) {
+                            const newItem = new QueuedAudioItem(
+                                url,
+                                user,
+                                obj.title || 'Unknown Title',
+                                obj.duration || 0,
+                                obj.uploader || 'Unknown',
+                                obj.upload_date || '',
+                                obj.view_count || 0,
+                                obj.description || '',
+                                Date.now(),
+                                obj.thumbnail || ''
+                            );
+                            newItem.setOutputStreamUrlDirectly(obj.audio_url);
+                            items.push(newItem);
+                        }
+                    } catch { /* ignore malformed lines */ }
+                }
+                if (!items.length) return reject(new Error(stderr || "No items found."));
+
+                if(items.length === 1 && !playlistId) {
+                    resolve([items, null]);
+                }
+
+                const playlistItem: PlaylistItem = new PlaylistItem(
+                    playlistId,
+                    url,
+                    playlistTitle || 'Unknown Playlist',
+                    playlistDescription,
+                    playlistDuration,
+                    playlistUploader,
+                    user,
+                    items.length,
+                    Date.now(),
+                );
+                resolve([items, playlistItem]);
+            });
+        });
     }
     
     public static isValidUrl(url: string): boolean {

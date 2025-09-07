@@ -354,6 +354,11 @@ export class ChannelAudioPlayer {
         console.log(`Skipping current audio ${skipItemList ? 'playlist' : 'track'} for channel ${this.channel.id}.`);
         if (skipItemList) {
             const playlistId = this.currentItem?.playlistId || '';
+            if(playlistId === '') {
+                console.log(`Current item is not part of a playlist. Skipping single track instead.`);
+                this.player.stop();
+                return;
+            }
             let skipItemCount = 0;
             for(let i=0; i<this.playQueue.length; i++) {
                 const item = this.playQueue[i];
