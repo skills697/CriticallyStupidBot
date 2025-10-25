@@ -229,7 +229,7 @@ export class ChannelAudioPlayer {
                 await this.playAudio(nextItem);
                 
                 if(this.playQueue.length > 0 && !this.playQueue[0].isOutputUrlSet) {
-                    this.playQueue[0].setOutputStreamUrl();
+                    await this.playQueue[0].setOutputStreamUrl();
                 }
             } else {
                 console.log(`No next item to play for channel ${this.channel.id}.`);
