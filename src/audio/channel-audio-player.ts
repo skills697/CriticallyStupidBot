@@ -100,7 +100,7 @@ export class ChannelAudioPlayer {
      */
     private async onVoiceStatusChange(oldState: VoiceConnectionState, newState: VoiceConnectionState): Promise<void> {
         if (newState.status === 'disconnected' || newState.status === 'destroyed') {
-            console.log(`Connection state changed for channel ${this.channel.id}: ${oldState.status} -> ${newState.status}`);
+            console.log(`Voice connection state changed for channel ${this.channel.id}: ${oldState.status} -> ${newState.status}`);
             this.closeConnectionCallback?.(this);
         }
         await this.checkAndUpdatePlayerState();
@@ -228,7 +228,7 @@ export class ChannelAudioPlayer {
                 }
                 await this.playAudio(nextItem);
                 
-                if(this.playQueue.length > 0) {
+                if(this.playQueue.length > 0 && !this.playQueue[0].isOutputUrlSet) {
                     this.playQueue[0].setOutputStreamUrl();
                 }
             } else {

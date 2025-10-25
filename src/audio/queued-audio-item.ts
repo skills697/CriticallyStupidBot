@@ -346,13 +346,15 @@ export class QueuedAudioItem {
 
         // Single template for both single video and playlist entries
         const template =
-            '{"title": %(title)j, "duration": %(duration)j, "uploader": %(uploader)j, "upload_date": %(upload_date)j, "view_count": %(view_count)j, "description": %(description)j, "thumbnail": %(thumbnail)j, "id": %(id)j, "webpage_url": %(webpage_url)j, "audio_url": %(url)j, , "playlist_title": %(playlist_title)j, "playlist_id": %(playlist_id)j, "playlist_description": %(playlist_description)j, "playlist_index": %(playlist_index)j, "playlist_uploader": %(playlist_uploader)j}';
+            '{"title": %(title)j, "duration": %(duration)j, "uploader": %(uploader)j, "upload_date": %(upload_date)j, "view_count": %(view_count)j, "description": %(description)j, "thumbnail": %(thumbnail)j, "id": %(id)j, "webpage_url": %(webpage_url)j, "audio_url": %(url)j, "playlist_title": %(playlist_title)j, "playlist_id": %(playlist_id)j, "playlist_description": %(playlist_description)j, "playlist_index": %(playlist_index)j, "playlist_uploader": %(playlist_uploader)j}';
 
         const args = [
             "-f", "bestaudio",
             "-S", "proto:https",
             "--yes-playlist",          // single URL -> 1 line; playlist -> many lines
             "--no-warnings",
+            "--output-na-placeholder", "null", // avoid file output
+            "--compat-options", "no-youtube-unavailable-videos",
             "--print", template,
             url
         ];
@@ -365,9 +367,13 @@ export class QueuedAudioItem {
 
         return new Promise<[QueuedAudioItem[], PlaylistItem | null]>((resolve, reject) => {
             execFile("yt-dlp", args, { maxBuffer: 24 * 1024 * 1024, timeout: 120000 }, (err, stdout, stderr) => {
-                if (err) return reject(err);
+                if (err) {
+                    fs.writeFileSync("temp_yt-dlp-error-stdout1.json", stdout);
+                    fs.writeFileSync("temp_yt-dlp-error-stderr1.json", stderr);
+                    return reject(err);
+                }
                 const items: QueuedAudioItem[] = [];
-
+            
                 for (const line of stdout.split(/\r?\n/)) {
                     const t = line.trim();
                     if (!t) continue;
@@ -418,6 +424,9 @@ export class QueuedAudioItem {
                 );
                 resolve([items, playlistItem]);
             });
+        }).catch((error) => {
+            console.error('Error in fetchMediaList:', error);
+            throw error;
         });
     }
     

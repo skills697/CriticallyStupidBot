@@ -4,10 +4,7 @@ import { ChannelAudioPlayer } from "../audio/channel-audio-player";
 import { QueuedAudioItem } from "../audio/queued-audio-item";
 import { PlaylistItem } from "../audio/playlist-item";
 const { spawn, execSync } = require('child_process');
-const {
-    joinVoiceChannel,
-    AudioPlayerStatus,
-} = require('@discordjs/voice');
+import { joinVoiceChannel, AudioPlayerStatus } from '@discordjs/voice';
 
 class GuildAudioCommandHandler {
     public channelAudioPlayer: ChannelAudioPlayer | null = null;
@@ -169,9 +166,9 @@ async function getGuildAudioCommandHandler(
         return handler;
     }
 
-    const connection = await joinVoiceChannel({
+    const connection = joinVoiceChannel({
         channelId: voiceChannel.id,
-        guildId: interaction.guildId,
+        guildId: guildId,
         adapterCreator: voiceChannel.guild.voiceAdapterCreator,
     });
 
